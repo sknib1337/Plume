@@ -19,7 +19,8 @@ What you expected to happen instead.
 **Environment**
 - OS:
 - Node version (`node --version`):
-- Model (`MODEL` env, default claude-sonnet-4-6):
+- LLM provider (`LLM_PROVIDER` env, default anthropic):
+- Model (`MODEL` env):
 
 **Screenshots / logs**
 If applicable, add screenshots or server log output. Do NOT paste your API key.

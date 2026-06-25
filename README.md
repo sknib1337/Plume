@@ -35,16 +35,21 @@ It has three tabs:
 ## How it works
 
 ```
-Browser (React, Vite)  ──POST /api/enhance──▶  Express server  ──▶  Anthropic Messages API
-        ▲                                       (holds API key)
-        └──────────── bullets + slots ──────────┘
+Browser (React, Vite)  ──POST /api/enhance──▶  Express server  ──▶  Your LLM provider
+        ▲                                       (holds the key)      Anthropic, OpenAI,
+        └──────────── bullets + slots ──────────┘                    OpenRouter, Ollama, …
 ```
 
-The browser **never** talks to Anthropic directly and never sees your API key. All requests go
-through a thin Express proxy that holds the key server-side, builds the system prompt, calls the
-[Messages API](https://docs.anthropic.com/en/api/messages), and returns clean JSON. This is the one
-change that makes the tool safe to deploy publicly — a key shipped to the browser would be
-harvested within minutes.
+The browser **never** talks to the LLM provider directly and never sees your API key. All requests
+go through a thin Express proxy that holds the key server-side, builds the system prompt, calls your
+chosen model, and returns clean JSON. This is the one change that makes the tool safe to deploy
+publicly — a key shipped to the browser would be harvested within minutes.
+
+Pick a backend with `LLM_PROVIDER`: `anthropic` (default, native
+[Messages API](https://docs.anthropic.com/en/api/messages)) or `openai` for **any**
+OpenAI-compatible `/chat/completions` endpoint — OpenAI, OpenRouter, Groq, Together, DeepSeek,
+Mistral, Google's OpenAI-compat layer, or a local model via Ollama / LM Studio / vLLM. See
+[Configuration](#configuration).
 
 ---
 
@@ -53,7 +58,9 @@ harvested within minutes.
 **Prerequisites**
 
 - [Node.js](https://nodejs.org) 20 or newer
-- An Anthropic API key — create one at <https://console.anthropic.com/settings/keys>
+- An API key for the LLM provider you want to use. By default that's Anthropic — create one at
+  <https://console.anthropic.com/settings/keys>. To use OpenAI, OpenRouter, Groq, etc., or a free
+  local model via Ollama / LM Studio (no key at all), see [Configuration](#configuration).
 
 **Setup**
 
@@ -63,7 +70,7 @@ cd plume
 npm install
 
 cp .env.example .env        # on Windows (cmd): copy .env.example .env
-# then open .env and paste your ANTHROPIC_API_KEY
+# then open .env and paste your key (ANTHROPIC_API_KEY by default)
 ```
 
 **Run in development**
@@ -88,26 +95,50 @@ npm start         # Express serves dist/ and the API on one port (default 3001)
 
 All configuration is via environment variables (see `.env.example`):
 
-| Variable               | Default              | Notes                                                            |
-| ---------------------- | -------------------- | ---------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`    | _(required)_         | Your Anthropic key. Never commit this.                           |
-| `PORT`                 | `3001`               | Port the Express server listens on.                              |
-| `MODEL`                | `claude-sonnet-4-6`  | Any current model string. `claude-haiku-4-5` is cheaper.         |
-| `RATE_LIMIT_MAX`       | `30`                 | Max API requests per IP per window.                              |
-| `RATE_LIMIT_WINDOW_MS` | `300000`             | Rate-limit window length in ms (default 5 min).                  |
-| `TRUST_PROXY`          | _(off)_              | Set to `1` only when behind a proxy, so limits see real IPs.     |
+| Variable               | Default                     | Notes                                                                                          |
+| ---------------------- | --------------------------- | ---------------------------------------------------------------------------------------------- |
+| `LLM_PROVIDER`         | `anthropic`                 | `anthropic` (native Messages API) or `openai` (any OpenAI-compatible endpoint).                |
+| `ANTHROPIC_API_KEY`    | _(required for anthropic)_  | Your Anthropic key. Never commit this.                                                         |
+| `LLM_BASE_URL`         | `https://api.openai.com/v1` | OpenAI-compatible base URL (no `/chat/completions`). Used when `LLM_PROVIDER=openai`.           |
+| `LLM_API_KEY`          | _(required for hosted)_     | Key for the OpenAI-compatible endpoint; optional for local models. `OPENAI_API_KEY` also works. |
+| `MODEL`                | `claude-sonnet-4-6` *       | Model id. *Default applies to `anthropic`; **required** for `openai` (e.g. `gpt-4o-mini`).      |
+| `PORT`                 | `3001`                      | Port the Express server listens on.                                                            |
+| `RATE_LIMIT_MAX`       | `30`                        | Max API requests per IP per window.                                                            |
+| `RATE_LIMIT_WINDOW_MS` | `300000`                    | Rate-limit window length in ms (default 5 min).                                                |
+| `TRUST_PROXY`          | _(off)_                     | Set to `1` only when behind a proxy, so limits see real IPs.                                    |
+
+**Examples** — pick one provider's block for your `.env`:
+
+```bash
+# OpenAI
+LLM_PROVIDER=openai
+LLM_API_KEY=sk-...
+MODEL=gpt-4o-mini
+
+# OpenRouter (one key, hundreds of models)
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_API_KEY=sk-or-...
+MODEL=anthropic/claude-3.5-sonnet
+
+# Local model via Ollama — no API key, nothing leaves your machine
+LLM_PROVIDER=openai
+LLM_BASE_URL=http://localhost:11434/v1
+MODEL=llama3.1
+```
 
 ---
 
 ## Cost
 
-Each enhancement or tailoring is a single Messages API call with a small prompt and a short
-response — on the order of a thousand tokens total. With Sonnet 4.6 at roughly $3 per million input
-tokens and $15 per million output, a single call costs a fraction of a cent. Switching `MODEL` to
-`claude-haiku-4-5` lowers it further. Check current pricing at
-<https://www.anthropic.com/pricing>, since rates change.
+Each enhancement or tailoring is a single API call with a small prompt and a short response — on the
+order of a thousand tokens total — so the per-call cost is a fraction of a cent on typical hosted
+models (e.g. Claude Sonnet 4.6, or GPT-4o mini). Cheaper or smaller models lower it further, and a
+**local model via Ollama / LM Studio costs nothing per call**. Check your provider's pricing page,
+since rates vary by model and change over time.
 
-You pay Anthropic directly for usage on your own key. There is no other cost to running this.
+You pay your chosen provider directly for usage on your own key. There is no other cost to running
+this.
 
 ---
 
@@ -116,12 +147,13 @@ You pay Anthropic directly for usage on your own key. There is no other cost to 
 The app is a standard Node server after `npm run build`, so it runs anywhere that runs Node:
 
 - **Render / Railway / Fly.io / a VPS:** set the build command to `npm install && npm run build`,
-  the start command to `npm start`, and add `ANTHROPIC_API_KEY` (and optionally `MODEL`) as
-  environment variables in the platform dashboard.
+  the start command to `npm start`, and add your provider credentials as environment variables in
+  the platform dashboard — `ANTHROPIC_API_KEY` for the default Anthropic backend, or
+  `LLM_PROVIDER=openai` + `LLM_BASE_URL` + `LLM_API_KEY` + `MODEL` for an OpenAI-compatible one.
 - **Split frontend/backend:** you can also host `dist/` on any static host and run `server/` as a
   standalone API — just point the frontend's fetch base at the API's URL and enable CORS.
 
-Whatever you choose, **set `ANTHROPIC_API_KEY` as a platform secret**, never in committed code.
+Whatever you choose, **set your API key as a platform secret**, never in committed code.
 Per-IP rate limiting is built in (configurable via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS`); tune
 it for your traffic before exposing a public instance, since each request spends real money on your
 key. If you deploy behind a proxy or load balancer, also set `TRUST_PROXY` so limits apply per real

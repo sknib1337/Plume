@@ -12,15 +12,16 @@ Thanks for taking the time to contribute. This is a small project, so the proces
 
 ```bash
 npm install
-cp .env.example .env     # add your ANTHROPIC_API_KEY
+cp .env.example .env     # add your provider key (ANTHROPIC_API_KEY by default)
 npm run dev
 ```
 
 `npm run dev` runs the Express API and the Vite dev server together. The frontend is at
 `http://localhost:5173` and proxies `/api` to Express on `3001`.
 
-You'll need your own Anthropic API key to test changes that hit the model. Changes to pure UI,
-parsing, or styling can often be verified without one.
+You'll need an API key for your chosen LLM provider to test changes that hit the model (Anthropic by
+default; or run a local model with Ollama / LM Studio for free — see the README). Changes to pure
+UI, parsing, or styling can often be verified without one.
 
 ## Where things live
 

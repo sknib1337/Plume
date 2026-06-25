@@ -7,18 +7,52 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
-const MODEL = process.env.MODEL || "claude-sonnet-4-6";
+
+// --- LLM provider configuration ---------------------------------------------
+// Plume talks to one of two backends, chosen with LLM_PROVIDER:
+//   "anthropic" (default) — native Anthropic Messages API via the official SDK.
+//   "openai"              — ANY OpenAI-compatible /chat/completions endpoint:
+//        OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral, Google's
+//        OpenAI-compat layer, or a local runtime (Ollama / LM Studio / vLLM).
+//        Set LLM_BASE_URL and LLM_API_KEY (a key is optional for local models).
+const PROVIDER = (process.env.LLM_PROVIDER || "anthropic").toLowerCase();
+const MODEL = process.env.MODEL || (PROVIDER === "anthropic" ? "claude-sonnet-4-6" : "");
+const OPENAI_BASE_URL = (process.env.LLM_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_API_KEY = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "";
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+
 const MAX_INPUT_CHARS = 4000;
 const MAX_TAILOR_CHARS = 8000;
+const MAX_OUTPUT_TOKENS = 1024;
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.warn(
-    "\n[plume] ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key.\n"
-  );
+// Returns a human-readable reason the server can't reach the model, or null if OK.
+// Drives both the startup warning and the per-request guard.
+function configError() {
+  if (PROVIDER === "anthropic") {
+    return ANTHROPIC_API_KEY ? null : "Server is missing ANTHROPIC_API_KEY. See README setup.";
+  }
+  if (PROVIDER === "openai") {
+    if (!MODEL) return "Set MODEL for the OpenAI-compatible provider (e.g. gpt-4o-mini).";
+    // A key is required for hosted endpoints but optional for local runtimes.
+    const isLocal = /\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(OPENAI_BASE_URL);
+    if (!OPENAI_API_KEY && !isLocal) {
+      return "Server is missing LLM_API_KEY for the OpenAI-compatible provider. See README setup.";
+    }
+    return null;
+  }
+  return `Unknown LLM_PROVIDER "${PROVIDER}". Use "anthropic" or "openai".`;
 }
 
-// The SDK automatically reads ANTHROPIC_API_KEY from the environment.
-const anthropic = new Anthropic();
+const startupWarning = configError();
+if (startupWarning) console.warn(`\n[plume] ${startupWarning}\n`);
+
+// The Anthropic SDK client is created lazily so the server can run in
+// OpenAI-compatible mode without an Anthropic key present.
+let anthropicClient = null;
+function getAnthropic() {
+  if (!anthropicClient) anthropicClient = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  return anthropicClient;
+}
 
 const app = express();
 app.use(express.json({ limit: "256kb" }));
@@ -98,14 +132,51 @@ function extractJson(raw) {
   return JSON.parse(t);
 }
 
-async function callModel(system, userContent) {
-  const message = await anthropic.messages.create({
+// --- model adapters ---
+// Each returns the model's raw text; callModel extracts the embedded JSON.
+async function callAnthropic(system, userContent) {
+  const message = await getAnthropic().messages.create({
     model: MODEL,
-    max_tokens: 1024,
+    max_tokens: MAX_OUTPUT_TOKENS,
     system,
     messages: [{ role: "user", content: userContent }],
   });
-  const text = message.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+  return message.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+}
+
+async function callOpenAICompatible(system, userContent) {
+  const headers = { "Content-Type": "application/json" };
+  if (OPENAI_API_KEY) headers.Authorization = `Bearer ${OPENAI_API_KEY}`;
+
+  const res = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: MAX_OUTPUT_TOKENS,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: userContent },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    const err = new Error(`LLM endpoint returned ${res.status}. ${detail.slice(0, 300)}`);
+    err.status = res.status;
+    throw err;
+  }
+
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content || "";
+}
+
+async function callModel(system, userContent) {
+  const text =
+    PROVIDER === "anthropic"
+      ? await callAnthropic(system, userContent)
+      : await callOpenAICompatible(system, userContent);
   return extractJson(text);
 }
 
@@ -120,8 +191,9 @@ function handleError(res, err) {
 }
 
 function keyGuard(res) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    res.status(500).json({ error: "Server is missing ANTHROPIC_API_KEY. See README setup." });
+  const err = configError();
+  if (err) {
+    res.status(500).json({ error: err });
     return false;
   }
   return true;
@@ -178,7 +250,9 @@ app.post("/api/tailor", apiLimiter, async (req, res) => {
   }
 });
 
-app.get("/api/health", (_req, res) => res.json({ ok: true, model: MODEL }));
+app.get("/api/health", (_req, res) =>
+  res.json({ ok: true, provider: PROVIDER, model: MODEL || null })
+);
 
 // In production, serve the built frontend from this same server.
 if (process.env.NODE_ENV === "production") {
@@ -188,5 +262,7 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.listen(PORT, () => {
-  console.log(`[plume] API listening on http://localhost:${PORT} (model: ${MODEL})`);
+  console.log(
+    `[plume] API listening on http://localhost:${PORT} (provider: ${PROVIDER}, model: ${MODEL || "unset"})`
+  );
 });
